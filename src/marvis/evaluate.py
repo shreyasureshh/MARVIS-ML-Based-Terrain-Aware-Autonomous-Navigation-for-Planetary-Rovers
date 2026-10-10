@@ -26,6 +26,28 @@ from .model import load_checkpoint
 from .uncertainty import predict
 
 MAX_UNC_PIXELS = 2_000_000
+MIN_UNC_PIXELS = 10_000
+MIN_PER_OUTCOME = 100
+CONVENTIONS = {
+    "pixels": "Only labelled pixels (GT != ignore_index; null, rover-body and beyond-range pixels excluded).",
+    "segmentation_aggregation": "Confusion matrix summed over all test pixels, then per-class IoU/Dice/precision/"
+                                "recall; mIoU = mean over classes present in GT (dataset-level, not per-image mean).",
+    "uncertainty_score": "Higher = less certain. Predictive entropy H[E_t p_t] and mutual information "
+                         "H[E_t p_t] - E_t H[p_t], both divided by log(C) to lie in [0, 1].",
+    "confidence": "max_c of the (MC-mean) predictive probability; used for ECE (15 equal-width bins).",
+    "error_detection_AUROC": "Positive = misclassified pixel; score = uncertainty. 0.5 = chance.",
+    "AURC": "Mean error rate over all coverage levels when keeping the most certain pixels first (lower is better).",
+    "sampling": f"Up to {MAX_UNC_PIXELS:,} labelled pixels sampled uniformly (seed 0) for uncertainty metrics.",
+}
+
+
+def uncertainty_evaluable(err: np.ndarray) -> tuple[bool, str]:
+    if len(err) < MIN_UNC_PIXELS:
+        return False, f"only {len(err)} labelled pixels (< {MIN_UNC_PIXELS})"
+    n_err = int(err.sum())
+    if n_err < MIN_PER_OUTCOME or len(err) - n_err < MIN_PER_OUTCOME:
+        return False, f"{n_err} errors / {len(err) - n_err} correct: too few of one outcome for AUROC/ECE"
+    return True, "ok"
 
 
 def main(argv=None):
@@ -54,7 +76,7 @@ def main(argv=None):
     if args.save_preds:
         pred_dir.mkdir(exist_ok=True)
     keep_frac = min(1.0, MAX_UNC_PIXELS / max(len(ds) * size * size * 0.6, 1))
-    qual = []
+    qual, per_image = [], []
     for i, (x, y) in enumerate(dl):
         t0 = time.perf_counter(); det = predict(model, x, 0); lat["deterministic"].append(time.perf_counter() - t0)
         t0 = time.perf_counter(); mc = predict(model, x, args.mc); lat["mc"].append(time.perf_counter() - t0)
@@ -63,10 +85,12 @@ def main(argv=None):
         pd_, pm = det["probs"][0].argmax(0), mc["probs"][0].argmax(0)
         cm["deterministic"] += confusion_matrix(gt, pd_, C, IGN)
         cm["mc"] += confusion_matrix(gt, pm, C, IGN)
+        img_cm = confusion_matrix(gt, pm, C, IGN)
+        per_image.append((ds.item_id(i), float(x.mean()), img_cm))
         g = ds.group_of(i)
         if g is not None:
             group_cm.setdefault(g, np.zeros((C, C), np.int64))
-            group_cm[g] += confusion_matrix(gt, pm, C, IGN)
+            group_cm[g] += img_cm
         sel = valid & (rng.random(gt.shape) < keep_frac)
         pix["conf_det"].append(det["probs"][0].max(0)[sel]); pix["conf_mc"].append(mc["probs"][0].max(0)[sel])
         pix["ent_det"].append(det["entropy"][0][sel]); pix["ent_mc"].append(mc["entropy"][0][sel])
@@ -82,38 +106,70 @@ def main(argv=None):
     P = {k: np.concatenate(v) for k, v in pix.items()}
 
     seg = {k: segmentation_scores(v, info.names) for k, v in cm.items()}
-    unc = {
-        "softmax_entropy (deterministic)": {**entropy_error_summary(P["ent_det"], P["err_det"]),
-                                             "ECE": expected_calibration_error(P["conf_det"], ~P["err_det"])["ECE"]},
-        "mc_predictive_entropy": {**entropy_error_summary(P["ent_mc"], P["err_mc"]),
-                                  "ECE": expected_calibration_error(P["conf_mc"], ~P["err_mc"])["ECE"]},
-        "mc_mutual_information": entropy_error_summary(P["mi_mc"], P["err_mc"]),
-    }
-    rc = {"deterministic": risk_coverage(P["ent_det"], P["err_det"]), "mc": risk_coverage(P["ent_mc"], P["err_mc"])}
-    for k in rc:
-        unc[{"deterministic": "softmax_entropy (deterministic)", "mc": "mc_predictive_entropy"}[k]]["AURC"] = rc[k]["AURC"]
-    rel = {"deterministic": expected_calibration_error(P["conf_det"], ~P["err_det"]),
-           "mc": expected_calibration_error(P["conf_mc"], ~P["err_mc"])}
+    ok, why = uncertainty_evaluable(P["err_mc"])
+    ok_d, why_d = uncertainty_evaluable(P["err_det"])
+    unc, rc, rel = {}, {}, {}
+    if ok_d:
+        unc["softmax_entropy (deterministic)"] = {**entropy_error_summary(P["ent_det"], P["err_det"]),
+                                                  "ECE": expected_calibration_error(P["conf_det"], ~P["err_det"])["ECE"]}
+        rc["deterministic"] = risk_coverage(P["ent_det"], P["err_det"])
+        unc["softmax_entropy (deterministic)"]["AURC"] = rc["deterministic"]["AURC"]
+        rel["deterministic"] = expected_calibration_error(P["conf_det"], ~P["err_det"])
+    if ok:
+        unc["mc_predictive_entropy"] = {**entropy_error_summary(P["ent_mc"], P["err_mc"]),
+                                        "ECE": expected_calibration_error(P["conf_mc"], ~P["err_mc"])["ECE"]}
+        unc["mc_mutual_information"] = entropy_error_summary(P["mi_mc"], P["err_mc"])
+        rc["mc"] = risk_coverage(P["ent_mc"], P["err_mc"])
+        unc["mc_predictive_entropy"]["AURC"] = rc["mc"]["AURC"]
+        rel["mc"] = expected_calibration_error(P["conf_mc"], ~P["err_mc"])
+    mc_check = {"mean_mutual_information": float(P["mi_mc"].mean()) if len(P["mi_mc"]) else None,
+                "fraction_pixels_MI_gt_1e-4": float((P["mi_mc"] > 1e-4).mean()) if len(P["mi_mc"]) else None}
+    mc_check["stochastic"] = bool(mc_check["fraction_pixels_MI_gt_1e-4"] and mc_check["fraction_pixels_MI_gt_1e-4"] > 0)
     n_params = sum(p.numel() for p in model.parameters())
     metrics = {
         "experiment": args.experiment, "split": args.split, "n_images": len(ds), "image_size": size,
         "mc_samples": args.mc, "segmentation": seg, "uncertainty": unc, "risk_coverage": rc, "reliability": rel,
         "by_group": {g: segmentation_scores(v, info.names) for g, v in sorted(group_cm.items())},
+        "by_brightness_tertile": brightness_breakdown(per_image, info.names),
         "efficiency": {"n_params": n_params, "size_MB_fp32": n_params * 4 / 1e6,
                        "latency_s_deterministic_median": float(np.median(lat["deterministic"])),
                        "latency_s_mc_median": float(np.median(lat["mc"])), "device": "cpu (4 threads)"},
         "uncertainty_pixels_used": int(len(P["err_mc"])),
+        "uncertainty_evaluable": {"mc": [ok, why], "deterministic": [ok_d, why_d]},
+        "mc_dropout_variation_check": mc_check,
+        "conventions": CONVENTIONS,
     }
     (exp / f"metrics_{args.split}.json").write_text(json.dumps(metrics, indent=2))
-    plots(exp, metrics, info, qual)
+    plots(exp, metrics, info, qual, suffix="" if args.split == "test" else f"_{args.split}")
     s = seg["mc"]
-    print(f"[{args.experiment}] {args.split}: mIoU det {seg['deterministic']['mIoU']:.4f} | MC {s['mIoU']:.4f} | "
-          f"acc {s['pixel_accuracy']:.4f} | entropy correct {unc['mc_predictive_entropy']['mean_entropy_correct']:.3f} "
-          f"vs wrong {unc['mc_predictive_entropy']['mean_entropy_incorrect']:.3f} | "
-          f"AUROC {unc['mc_predictive_entropy']['error_detection_AUROC']:.3f}")
+    msg = f"[{args.experiment}] {args.split}: mIoU det {seg['deterministic']['mIoU']:.4f} | MC {s['mIoU']:.4f} | " \
+          f"acc {s['pixel_accuracy']:.4f}"
+    if "mc_predictive_entropy" in unc:
+        u = unc["mc_predictive_entropy"]
+        msg += f" | entropy correct {u['mean_entropy_correct']:.3f} vs wrong {u['mean_entropy_incorrect']:.3f}" \
+               f" | error AUROC {u['error_detection_AUROC']:.3f} | ECE {u['ECE']:.4f}"
+    else:
+        msg += f" | uncertainty metrics not reported: {why}"
+    print(msg + f" | MC varies: {mc_check['stochastic']}")
 
 
-def plots(exp, m, info, qual):
+def brightness_breakdown(per_image, names) -> dict:
+    """Image-condition generalisation: split test images into tertiles of mean intensity (descriptive only)."""
+    if len(per_image) < 9:
+        return {}
+    b = np.array([p[1] for p in per_image])
+    q = np.quantile(b, [1 / 3, 2 / 3])
+    out = {}
+    for name, sel in (("dark", b <= q[0]), ("medium", (b > q[0]) & (b <= q[1])), ("bright", b > q[1])):
+        cm = sum((p[2] for p, k in zip(per_image, sel) if k), np.zeros_like(per_image[0][2]))
+        s = segmentation_scores(cm, names)
+        out[name] = {"n_images": int(sel.sum()), "mean_intensity_range": [float(b[sel].min()), float(b[sel].max())],
+                     "mIoU": s["mIoU"], "pixel_accuracy": s["pixel_accuracy"],
+                     "per_class_IoU": {n: s["per_class"][n]["IoU"] for n in names}}
+    return out
+
+
+def plots(exp, m, info, qual, suffix=""):
     names = info.names
     colors = info.colors / 255.0
     # confusion matrix (row-normalised)
@@ -126,25 +182,29 @@ def plots(exp, m, info, qual):
             ax.text(c, r, f"{cmn[r, c]:.2f}", ha="center", va="center", color="white" if cmn[r, c] > 0.5 else "black")
     ax.set_xticks(range(len(names)), names, rotation=30); ax.set_yticks(range(len(names)), names)
     ax.set_xlabel("predicted"); ax.set_ylabel("ground truth"); ax.set_title("Confusion matrix (row-normalised)")
-    fig.tight_layout(); fig.savefig(exp / "confusion_matrix.png", dpi=130); plt.close(fig)
+    fig.tight_layout(); fig.savefig(exp / f"confusion_matrix{suffix}.png", dpi=130); plt.close(fig)
     # reliability diagram
     fig, ax = plt.subplots(figsize=(4.5, 4.2))
     ax.plot([0, 1], [0, 1], ls="--", c="gray", lw=1)
     for k, st in (("deterministic", "o-"), ("mc", "s-")):
+        if k not in m["reliability"]:
+            continue
         r = m["reliability"][k]
         xs = [c for c in r["bin_confidence"] if c is not None]
         ys = [a for a, c in zip(r["bin_accuracy"], r["bin_confidence"]) if c is not None]
         ax.plot(xs, ys, st, ms=4, label=f"{k} (ECE {r['ECE']:.3f})")
     ax.set_xlabel("confidence"); ax.set_ylabel("accuracy"); ax.set_title("Reliability diagram"); ax.legend()
-    fig.tight_layout(); fig.savefig(exp / "reliability.png", dpi=130); plt.close(fig)
+    fig.tight_layout(); fig.savefig(exp / f"reliability{suffix}.png", dpi=130); plt.close(fig)
     # risk-coverage
     fig, ax = plt.subplots(figsize=(4.5, 4.2))
     for k in ("deterministic", "mc"):
+        if k not in m["risk_coverage"]:
+            continue
         r = m["risk_coverage"][k]
         ax.plot(r["coverage"], r["risk"], label=f"{k} (AURC {r['AURC']:.3f})")
     ax.set_xlabel("coverage (most-certain fraction kept)"); ax.set_ylabel("error rate on kept pixels")
     ax.set_title("Risk vs coverage"); ax.legend()
-    fig.tight_layout(); fig.savefig(exp / "risk_coverage.png", dpi=130); plt.close(fig)
+    fig.tight_layout(); fig.savefig(exp / f"risk_coverage{suffix}.png", dpi=130); plt.close(fig)
     # qualitative grid
     if qual:
         fig, axs = plt.subplots(len(qual), 4, figsize=(10, 2.5 * len(qual)))
@@ -157,7 +217,7 @@ def plots(exp, m, info, qual):
                 axs[r, c].axis("off")
                 if r == 0:
                     axs[r, c].set_title(t)
-        fig.tight_layout(); fig.savefig(exp / "qualitative.png", dpi=90); plt.close(fig)
+        fig.tight_layout(); fig.savefig(exp / f"qualitative{suffix}.png", dpi=90); plt.close(fig)
     # training curves
     hist_p = exp / "history.json"
     if hist_p.exists():

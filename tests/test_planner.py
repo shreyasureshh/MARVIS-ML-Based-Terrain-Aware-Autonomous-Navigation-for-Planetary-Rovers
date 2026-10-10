@@ -110,3 +110,44 @@ def test_evaluate_path_counts_gt_obstacles():
     assert good["success"] and good["gt_high_risk_frac"] == 0
     assert not bad["success"] and bad["gt_impassable_cells"] == 1
     assert evaluate_path(None, frac, labelled, costs, hr, imp, np.zeros((g, g)))["success"] is False
+
+
+def test_invalid_grids_raise():
+    import pytest
+    from marvis.planner import InvalidGridError
+    b = np.zeros((5, 5), bool)
+    with pytest.raises(InvalidGridError):
+        astar(b, None, (0, 0), (9, 9))                       # goal out of bounds
+    with pytest.raises(InvalidGridError):
+        astar(b, np.full((4, 4), 0.1), (0, 0), (4, 4))       # shape mismatch
+    c = np.zeros((5, 5)); c[2, 2] = np.nan
+    with pytest.raises(InvalidGridError):
+        astar(b, c, (0, 0), (4, 4))                          # NaN cost
+    with pytest.raises(InvalidGridError):
+        astar(b, -np.ones((5, 5)), (0, 0), (4, 4))           # negative cost
+
+
+def test_blocked_start_or_goal_returns_none_and_expansions_counted():
+    b = np.zeros((6, 6), bool); b[0, 0] = True
+    assert astar(b, None, (0, 0), (5, 5)) is None
+    st = {}
+    p = astar(np.zeros((6, 6), bool), None, (0, 0), (5, 5), stats=st)
+    assert p and 0 < st["expanded"] <= 36
+
+
+def test_fully_blocked_grid_uncertainty_planner_stops():
+    g = 8
+    cm = CostMap(np.zeros((g, g)), np.ones((g, g), bool), np.ones((g, g), bool), np.zeros((g, g)))
+    r = plan(cm, "uncertainty", (7, 4), (0, 4))
+    assert r.path is None and r.behaviour == "stop"
+    assert plan(cm, "baseline", (7, 4), (0, 4)).path is None
+
+
+def test_uncertainty_planner_avoids_uncertain_region():
+    g = 9
+    unc = np.zeros((g, g)); unc[2:7, 3:6] = 1.0
+    cm = CostMap(np.full((g, g), 0.1), np.zeros((g, g), bool), np.zeros((g, g), bool), unc)
+    t = plan(cm, "terrain", (8, 4), (0, 4))
+    u = plan(cm, "uncertainty", (8, 4), (0, 4), uncertainty_weight=2.0, proceed_below=0.9, stop_above=0.95)
+    mean_u = lambda p: np.mean([unc[c] for c in p])
+    assert mean_u(u.path) < mean_u(t.path)

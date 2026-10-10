@@ -8,4 +8,5 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["src"]
+pythonpath = ["src", "tests"]
+markers = ["slow: end-to-end smoke tests (deselect with -m \"not slow\")"]

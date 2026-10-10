@@ -1,0 +1,36 @@
+# AI4MARS (MSL) dataset configuration.
+# Everything marked VERIFY must be confirmed by `python -m marvis.prepare inspect`
+# on the real files; the inspector reports the raw label values it actually finds.
+
+# Root of the extracted archive (or the subset). Override with env MARVIS_RAW_ROOT
+# or --raw-root. Relative paths are resolved against the project root.
+raw_root: data/raw/ai4mars
+
+# Raw label PNG value -> training class id (see configs/classes.yaml).
+# Any value not listed here is reported by the inspector and mapped to ignore.
+# VERIFY: AI4MARS documents 0 soil, 1 bedrock, 2 sand, 3 big rock, 255 null.
+label_map: {0: 0, 1: 1, 2: 2, 3: 3}
+null_values: [255]
+
+# Discovery is content-based: every image file under raw_root is indexed, and every
+# PNG under a directory whose path contains one of these tokens is treated as a label
+# / rover mask / range mask. Pairing uses a canonical key (see marvis.dataset_index).
+label_dir_token: labels
+rover_mask_dir_token: mxy        # VERIFY: rover-body masks (non-zero = rover)
+range_mask_dir_token: rng        # VERIFY: range masks (non-zero = beyond 30 m)
+test_dir_token: test             # label paths containing this are the official (expert) test set
+# Which expert-label variant is the primary test set; the others are kept as extra
+# evaluation subsets (label-agreement levels).
+primary_test_variant: min3
+
+# Train/val split of the crowd-sourced training labels (the official test set is kept intact).
+val_fraction: 0.15
+split_seed: 0
+# Group-aware splitting: images sharing a group (rover site/drive, which also covers
+# left/right stereo pairs) never cross splits. Regex is applied to the image file name.
+# VERIFY against real MSL names, e.g. NLA_397681339EDR_F0020000AUT_04096M1.JPG
+group_regex: '^N[LR][AB]_\d{9}[A-Z]{3}_[A-Z](\d{3})(\d{4})'
+# Optional cap (deterministic subset) for CPU-scale experiments; null = use all.
+max_train_images: null
+max_val_images: null
+max_test_images: null

@@ -19,18 +19,44 @@ def octile(a: Cell, b: Cell) -> float:
     return (dr + dc) + (SQRT2 - 2) * min(dr, dc)
 
 
+class InvalidGridError(ValueError):
+    pass
+
+
+def validate_grid(blocked: np.ndarray, cell_cost: np.ndarray | None, *cells: Cell):
+    if blocked.ndim != 2 or blocked.dtype != bool:
+        raise InvalidGridError(f"blocked must be a 2-D bool array, got {blocked.dtype} {blocked.shape}")
+    if cell_cost is not None:
+        c = np.asarray(cell_cost)
+        if c.shape != blocked.shape:
+            raise InvalidGridError(f"cost shape {c.shape} != grid shape {blocked.shape}")
+        if not np.isfinite(c).all():
+            raise InvalidGridError("cost grid contains NaN/inf")
+        if (c < 0).any():
+            raise InvalidGridError("cell costs must be non-negative")
+    for p in cells:
+        if not (0 <= p[0] < blocked.shape[0] and 0 <= p[1] < blocked.shape[1]):
+            raise InvalidGridError(f"cell {p} outside grid {blocked.shape}")
+
+
 def astar(blocked: np.ndarray, cell_cost: np.ndarray | None, start: Cell, goal: Cell,
-          epsilon: float = 1.0) -> list[Cell] | None:
+          epsilon: float = 1.0, stats: dict | None = None) -> list[Cell] | None:
     """Minimise sum over steps of  step_length * (epsilon + cell_cost[next_cell]).
 
     cell_cost=None with epsilon=1 gives the plain shortest path. Diagonal moves may not
-    cut the corner of a blocked cell. Returns the list of cells start..goal, or None.
+    cut the corner of a blocked cell. Returns the list of cells start..goal, or None if
+    the goal is unreachable (or start/goal is blocked). If `stats` is given, the number
+    of expanded nodes is written to stats["expanded"].
     """
+    validate_grid(blocked, cell_cost, start, goal)
+    if epsilon <= 0 and cell_cost is None:
+        raise InvalidGridError("epsilon must be > 0 for a uniform-cost search")
+    if stats is not None:
+        stats["expanded"] = 0
     h_, w_ = blocked.shape
     if blocked[start] or blocked[goal]:
         return None
     cost = np.zeros(blocked.shape) if cell_cost is None else np.asarray(cell_cost, dtype=np.float64)
-    assert (cost >= 0).all(), "cell costs must be non-negative"
     unit = epsilon + float(cost[~blocked].min()) if (~blocked).any() else epsilon  # admissible heuristic scale
     g = np.full(blocked.shape, np.inf)
     parent = -np.ones((h_, w_, 2), dtype=np.int64)
@@ -44,6 +70,8 @@ def astar(blocked: np.ndarray, cell_cost: np.ndarray | None, start: Cell, goal: 
         if cur == goal:
             break
         closed[cur] = True
+        if stats is not None:
+            stats["expanded"] += 1
         r, c = cur
         for dr, dc, d in MOVES:
             nr, nc = r + dr, c + dc
@@ -101,6 +129,7 @@ class PlanResult:
     behaviour: str | None = None          # proceed / slow / stop->replanned / stop (only for uncertainty planner)
     uncertainty_weight_used: float | None = None
     replans: int = 0
+    expanded: int = 0                     # A* node expansions (summed over replans)
     log: list[str] = field(default_factory=list)
 
 
@@ -119,11 +148,15 @@ def plan(costmap, planner: str, start: Cell, goal: Cell, *, epsilon: float = 0.0
     blocked = costmap.blocked
     s, g = nearest_free(blocked, start), nearest_free(blocked, goal)
     if s is None or g is None:
-        return PlanResult(planner, None, log=["no free cell for start/goal"])
+        return PlanResult(planner, None, behaviour="stop" if planner == "uncertainty" else None,
+                          log=["no free cell for start/goal (grid fully blocked)"])
+    st: dict = {}
     if planner == "baseline":
-        return PlanResult(planner, astar(blocked, None, s, g, epsilon=1.0))
+        p = astar(blocked, None, s, g, epsilon=1.0, stats=st)
+        return PlanResult(planner, p, expanded=st["expanded"], log=[] if p else ["goal unreachable"])
     if planner == "terrain":
-        return PlanResult(planner, astar(blocked, costmap.terrain_cost, s, g, epsilon=epsilon))
+        p = astar(blocked, costmap.terrain_cost, s, g, epsilon=epsilon, stats=st)
+        return PlanResult(planner, p, expanded=st["expanded"], log=[] if p else ["goal unreachable"])
     if planner != "uncertainty":
         raise ValueError(planner)
     if costmap.uncertainty is None:
@@ -131,7 +164,8 @@ def plan(costmap, planner: str, start: Cell, goal: Cell, *, epsilon: float = 0.0
     w = uncertainty_weight
     res = PlanResult(planner, None, uncertainty_weight_used=w)
     for k in range(max_replans + 1):
-        path = astar(blocked, costmap.total_cost(w), s, g, epsilon=epsilon)
+        path = astar(blocked, costmap.total_cost(w), s, g, epsilon=epsilon, stats=st)
+        res.expanded += st["expanded"]
         if path is None:
             res.log.append(f"w={w:.2f}: no path")
             res.path, res.behaviour = None, "stop"

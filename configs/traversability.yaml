@@ -1,3 +1,5 @@
+# Grid geometry: IMAGE SPACE. The (H, W) prediction is average-pooled to grid_size x grid_size;
+# row 0 = top of the image (far field), the rover sits at the bottom centre. No ground-plane projection.
 # ASSUMED terrain costs (engineering prior, NOT measured from data).
 # AI4MARS labels terrain type, not traction / slip / geometry.
 class_costs:
@@ -13,8 +15,11 @@ high_risk_classes: [sand, big_rock]   # used for GT-based path risk metric
 uncertainty:
   mc_samples: 20
   weight: 1.0          # cost += weight * normalized entropy
-  proceed_below: 0.25  # threshold A (mean normalized entropy along path)
-  stop_above: 0.45     # threshold B
+  # Fallback thresholds only. The evaluation calibrates A/B on the VALIDATION split
+  # (quantiles below of the mean path uncertainty) and writes behaviour_thresholds.json.
+  proceed_below: 0.25  # threshold A (mean normalized entropy along path)  - ASSUMPTION
+  stop_above: 0.45     # threshold B                                       - ASSUMPTION
+  calibration_quantiles: [0.5, 0.9]
   replan_weight_multiplier: 3.0
 planner:
   step_epsilon: 0.05   # per-unit-length base cost for cost-aware planners (tie-break toward short paths)
