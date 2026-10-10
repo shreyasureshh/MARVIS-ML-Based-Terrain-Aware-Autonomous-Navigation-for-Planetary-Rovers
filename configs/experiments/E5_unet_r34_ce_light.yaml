@@ -1,0 +1,16 @@
+name: E5_unet_r34_ce_light
+# Ablation: remove class weights (plain CE) vs E1
+arch: unet
+encoder: resnet34
+loss: ce
+aug: light
+image_size: 256
+batch_size: 8
+lr: 0.0005
+weight_decay: 0.0001
+dropout: 0.2
+class_weight_power: 0.0
+seed: 0
+num_workers: 2
+threads: 4
+epochs: 8   # finalised after timing one epoch on this CPU

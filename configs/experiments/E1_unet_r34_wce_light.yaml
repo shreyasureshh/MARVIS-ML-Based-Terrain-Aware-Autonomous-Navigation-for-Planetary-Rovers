@@ -1,0 +1,16 @@
+name: E1_unet_r34_wce_light
+# Baseline: U-Net/ResNet34, sqrt-inverse-frequency weighted CE, light aug
+arch: unet
+encoder: resnet34
+loss: wce
+aug: light
+image_size: 256
+batch_size: 8
+lr: 0.0005
+weight_decay: 0.0001
+dropout: 0.2
+class_weight_power: 0.5
+seed: 0
+num_workers: 2
+threads: 4
+epochs: 8   # finalised after timing one epoch on this CPU

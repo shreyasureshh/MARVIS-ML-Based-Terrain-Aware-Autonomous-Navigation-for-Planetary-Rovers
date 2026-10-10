@@ -1,0 +1,8 @@
+# Terrain classes. The label values MUST be verified against the real AI4MARS
+# label PNGs (see scripts/inspect_dataset.py) before training.
+ignore_index: 255
+classes:
+  - {id: 0, name: soil,     color: [196, 120, 64]}
+  - {id: 1, name: bedrock,  color: [120, 120, 120]}
+  - {id: 2, name: sand,     color: [240, 210, 110]}
+  - {id: 3, name: big_rock, color: [200, 30, 30]}

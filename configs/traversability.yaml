@@ -1,0 +1,20 @@
+# ASSUMED terrain costs (engineering prior, NOT measured from data).
+# AI4MARS labels terrain type, not traction / slip / geometry.
+class_costs:
+  soil: 0.10       # low
+  bedrock: 0.30    # low-medium (uneven)
+  sand: 0.75       # high (slip / embedding risk)
+  big_rock: 1.00   # impassable
+impassable_classes: [big_rock]
+impassable_prob_threshold: 0.5   # cell blocked if mean P(impassable class) >= this
+grid_size: 64                    # planning grid (cells per side)
+footprint_radius_cells: 2        # obstacle inflation radius
+high_risk_classes: [sand, big_rock]   # used for GT-based path risk metric
+uncertainty:
+  mc_samples: 20
+  weight: 1.0          # cost += weight * normalized entropy
+  proceed_below: 0.25  # threshold A (mean normalized entropy along path)
+  stop_above: 0.45     # threshold B
+  replan_weight_multiplier: 3.0
+planner:
+  step_epsilon: 0.05   # per-unit-length base cost for cost-aware planners (tie-break toward short paths)
