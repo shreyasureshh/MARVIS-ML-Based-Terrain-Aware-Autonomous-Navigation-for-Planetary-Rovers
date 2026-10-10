@@ -25,20 +25,38 @@ MANIFEST_FIELDS = ["key", "image", "label", "rover_mask", "range_mask", "source"
                    "key_rule", "issues"]
 
 
-def read_manifest(split: str, manifest_dir: Path | None = None) -> list[dict]:
+PATH_FIELDS = ("image", "label", "rover_mask", "range_mask")
+
+
+def read_manifest(split: str, manifest_dir: Path | None = None, raw_root: str | Path | None = None) -> list[dict]:
+    """Paths in manifests are relative to the dataset root, so manifests are portable across machines."""
     p = (manifest_dir or MANIFESTS) / f"{split}.csv"
     if not p.exists():
         raise FileNotFoundError(f"manifest {p} not found - run `python -m marvis.prepare split` first")
+    root = Path(raw_root or load_dataset_config()["raw_root"])
     with open(p, newline="") as f:
-        return [{k: (v or None) for k, v in row.items()} for row in csv.DictReader(f)]
+        rows = [{k: (v or None) for k, v in row.items()} for row in csv.DictReader(f)]
+    for r in rows:
+        for k in PATH_FIELDS:
+            if r.get(k) and not Path(r[k]).is_absolute():
+                r[k] = str(root / r[k])
+    return rows
 
 
-def write_manifest(rows: list[dict], path: Path):
+def write_manifest(rows: list[dict], path: Path, raw_root: str | Path | None = None):
     path.parent.mkdir(parents=True, exist_ok=True)
+    root = Path(raw_root or load_dataset_config()["raw_root"])
+    out = []
+    for r in rows:
+        r = dict(r)
+        for k in PATH_FIELDS:
+            if r.get(k) and Path(r[k]).is_relative_to(root):
+                r[k] = str(Path(r[k]).relative_to(root))
+        out.append(r)
     with open(path, "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=MANIFEST_FIELDS, extrasaction="ignore")
         w.writeheader()
-        w.writerows(rows)
+        w.writerows(out)
 
 
 def build_lut(label_map: dict[int, int], ignore_index: int, max_value: int = 65535) -> np.ndarray:
@@ -89,12 +107,12 @@ class SegDataset(Dataset):
     def __init__(self, split: str, size: int | None, aug: str = "none", max_items: int | None = None,
                  manifest_dir: Path | None = None, dataset_cfg: dict | None = None):
         self.split, self.size, self.aug = split, size, aug
-        self.rows = read_manifest(split, manifest_dir)
+        cfg = dataset_cfg or load_dataset_config()
+        self.rows = read_manifest(split, manifest_dir, cfg["raw_root"])
         if max_items:
             self.rows = self.rows[:max_items]  # manifests are already shuffled deterministically
         info = load_classes()
         self.ignore_index = info.ignore_index
-        cfg = dataset_cfg or load_dataset_config()
         self.lut = build_lut(cfg["label_map"], self.ignore_index)
 
     def __len__(self):

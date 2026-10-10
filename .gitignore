@@ -8,3 +8,5 @@ outputs/**/checkpoints/
 *.pth
 *.pt
 .DS_Store
+outputs/**/*_preds/
+outputs/**/train.log

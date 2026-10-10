@@ -13,4 +13,6 @@ class_weight_power: 0.5
 seed: 0
 num_workers: 2
 threads: 4
-epochs: 8   # finalised after timing one epoch on this CPU
+epochs: 8   # PROVISIONAL: set after `scripts/run.sh bench` times one real epoch
+early_stopping_patience: 3
+device: auto

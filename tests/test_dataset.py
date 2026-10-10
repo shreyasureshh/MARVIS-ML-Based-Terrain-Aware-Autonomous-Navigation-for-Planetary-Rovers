@@ -139,3 +139,14 @@ def test_is_usable():
     from marvis.dataset_index import Record
     assert is_usable(Record("k", "l", issues=["unknown_label_values:7"]))
     assert not is_usable(Record("k", "l", issues=["missing_image"]))
+
+
+def test_manifests_store_relative_paths(tree):
+    cfg, tmp = tree
+    man, out = tmp / "manifests", tmp / "out"
+    inspect(cfg, manifest_dir=man, out_dir=out)
+    split(cfg, manifest_dir=man, out_dir=out)
+    text = (man / "train.csv").read_text()
+    assert cfg["raw_root"] not in text and "images/edr/" in text
+    ds = SegDataset("train", 16, manifest_dir=man, dataset_cfg=cfg)
+    assert ds[0][0].shape == (3, 16, 16)

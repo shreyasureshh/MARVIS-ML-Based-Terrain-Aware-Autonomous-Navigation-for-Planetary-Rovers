@@ -61,3 +61,10 @@ def test_full_pipeline_on_fixture(tmp_path):
     assert sel["experiment"] == exp.name
     with pytest.raises(AssertionError):
         run(env, "marvis.evaluate_planning", exp.name, "--split", "test", "--calibrate")
+    # dashboard renders every page against these artifacts without exceptions
+    from test_dashboard import render
+    rep = render({k: env[k] for k in ("MARVIS_DATA", "MARVIS_OUTPUTS", "MARVIS_RAW_ROOT")})
+    for page, r in rep.items():
+        assert not r["exceptions"], (page, r["exceptions"])
+    assert rep["4 · Model comparison"]["n_dataframes"] >= 2
+    assert rep["6 · Traversability & planning"]["n_dataframes"] >= 1

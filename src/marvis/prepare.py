@@ -66,7 +66,7 @@ def inspect(cfg: dict, limit: int | None = None, out_dir: Path = DATASET_OUT, ma
     }
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "inspection_report.json").write_text(json.dumps(report, indent=2))
-    write_manifest([r.as_row() for r in recs], manifest_dir / "index.csv")
+    write_manifest([r.as_row() for r in recs], manifest_dir / "index.csv", cfg["raw_root"])
     _overlays(usable, cfg, out_dir / "sample_overlays.png")
     return report
 
@@ -122,7 +122,7 @@ def split(cfg: dict, manifest_dir: Path = MANIFESTS, out_dir: Path = DATASET_OUT
     idx = manifest_dir / "index.csv"
     if not idx.exists():
         raise FileNotFoundError("run `python -m marvis.prepare inspect` first")
-    rows = read_manifest("index", manifest_dir)
+    rows = read_manifest("index", manifest_dir, cfg["raw_root"])
     usable = [r for r in rows if not any(i.startswith(("missing_image", "corrupt_", "size_mismatch_image_label",
                                                          "ambiguous_image", "duplicate_label"))
                                          for i in (r["issues"] or "").split(";") if i)]
@@ -189,7 +189,7 @@ def split(cfg: dict, manifest_dir: Path = MANIFESTS, out_dir: Path = DATASET_OUT
                 if not (a.startswith("test") or b.startswith("test")):
                     assert not ga & gb, f"group overlap {a}/{b}"
     for name, rs in splits.items():
-        write_manifest(rs, manifest_dir / f"{name}.csv")
+        write_manifest(rs, manifest_dir / f"{name}.csv", cfg["raw_root"])
     info = load_classes()
     lut = build_lut(cfg["label_map"], info.ignore_index)
     counts = {}
@@ -233,6 +233,13 @@ def main(argv=None):
     ap.add_argument("--limit", type=int, help="inspect only the first N label files")
     a = ap.parse_args(argv)
     cfg = load_dataset_config(raw_root=a.raw_root)
+    if a.cmd == "inspect" and not Path(cfg["raw_root"]).is_dir():
+        raise SystemExit(
+            f"AI4MARS not found at {cfg['raw_root']}.\n"
+            "Provide it with one of:\n"
+            "  python -m marvis.fetch_subset --zenodo-record 15995036 --n-train 1000 --out data/raw/ai4mars\n"
+            "  export MARVIS_RAW_ROOT=/path/to/extracted/ai4mars   (or --raw-root PATH)\n"
+            "See README section 'Dataset setup' for the expected layout.")
     if a.cmd == "inspect":
         rep = inspect(cfg, a.limit)
         print(json.dumps({k: rep[k] for k in ("raw_root", "inspected_label_files", "usable_pairs", "discovery",
