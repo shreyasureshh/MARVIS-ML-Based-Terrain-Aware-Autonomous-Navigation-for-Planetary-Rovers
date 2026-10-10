@@ -41,8 +41,7 @@ class MarvisSegNet(nn.Module):
         if pretrained:
             sd = torch.load(fetch_pretrained(encoder), map_location="cpu", weights_only=True)
             sd = {k: v for k, v in sd.items() if not k.startswith("fc.")}
-            missing, unexpected = net.encoder.load_state_dict(sd, strict=False)
-            assert not unexpected and all(k.startswith("fc.") for k in missing), (missing, unexpected)
+            net.encoder.load_state_dict(sd, strict=True)  # strict: every encoder weight must match
         self.encoder, self.decoder, self.head = net.encoder, net.decoder, net.segmentation_head
         self.feat_drop = nn.Dropout2d(dropout)
         self.head_drop = nn.Dropout2d(dropout)
